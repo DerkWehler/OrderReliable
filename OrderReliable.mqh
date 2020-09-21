@@ -85,7 +85,7 @@
 //  v36, 30Nov18:
 //  Changed logging statements format
 //  Changed all outer scope vars to "g.." format
-//  Changed gRetryAttempts to 5 (was 10)
+//  Changed orRetryAttempts to 5 (was 10)
 //
 //  v37, 5Aug19:
 //  Changed OrderReliablePrint to take calling function name as 1st param
@@ -102,6 +102,26 @@
 //
 //      case ERR_MARKET_CLOSED:	// Added 16Jun20
 //
+//  v40, 03Sep20:
+//	Replaced (int)MarketInfo(symbol, MODE_DIGITS) with 'digits' in a couple 
+//	places in EnsureValidStops(). Not a functional change.  Made some 
+//	changes to GetOrderDetails() in handling a situation where digits == 0.
+//	More importantly, if point comes back as zero, because this would cause 
+//	divide-by-zero crashes.  Went through code and checked for this zero 
+//	condition and avoided.  But if point == 0, the order is still somewhat 
+//	likely tbe be problematic.
+//
+//  v41, 21Sep20:
+//	Saw slippage on stops: changed 'if (slipped > 0)' to 'if (slipped != 0)' 
+//	in OrderSendReliable2Step(). This WAS indeed a bug.  For buys, if 
+//	slipped < 0 it means you got in at a better price, so the benefits of 
+//	moving the stops may be debateable, but for a sell, slipped < 0 means 
+//	you got in on a worse price...
+//
+//	Updated MySymbolVal2String() and MySymbolConst2Val() with versions more 
+//	functional with non-forex pairs.  Added global orNonStandardSymbol.
+//	Changed globals to be prefaced with "or". 
+//
 //===========================================================================
 
 #property copyright "Copyright © 2006, Derk Wehler"
@@ -110,17 +130,17 @@
 #include <stdlib.mqh>
 #include <stderror.mqh>
 
-string 	OrderReliableVersion = "v39";
+string 	OrderReliableVersion = "v41";
 
-int 	gRetryAttempts 		= 5;
-double 	gSleepAveTime 		= 50.0;
+int 	orRetryAttempts			= 5;
+double 	orSleepAveTime			= 50.0;
 
-int 	gErrorLevel 		= 3;
+int 	orErrorLevel 			= 3;
 
-bool	gUseLimitToMarket 	= false;
-bool	gUseForTesting 		= false;
-bool	gAddSpreadToComment	= false;
-
+bool	orUseLimitToMarket		= false;
+bool	orUseForTesting 		= false;
+bool	orAddSpreadToComment	= false;
+bool	orNonStandardSymbol		= false;
 
 //=============================================================================
 //							 OrderSendReliable()
@@ -175,7 +195,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -205,7 +225,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	OrderReliablePrint(fn, "");
 	OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
 	OrderReliablePrint(fn, "Attempted " + OrderTypeToString(cmd) + " " + symbol + ": " + DoubleToStr(volume, 3) + " lots @" + 
-	                   DoubleToStr(price, digits+1) + ", sl:" + DoubleToStr(stoploss, digits+1) + ", tp:" + DoubleToStr(takeprofit, digits+1));
+	                   DoubleToStr(price, digits) + ", sl:" + DoubleToStr(stoploss, digits) + ", tp:" + DoubleToStr(takeprofit, digits));
 
 
 	// Normalize all price / stoploss / takeprofit to the proper # of digits.
@@ -225,7 +245,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 
 	// Concatenate to comment if enabled
 	double symSpr = MarketInfo(symbol, MODE_ASK) - MarketInfo(symbol, MODE_BID);
-	if (gAddSpreadToComment)
+	if (orAddSpreadToComment)
 		comment = comment + ", Spr:" + DoubleToStr(symSpr / adjPoint, 1);
 		
 	// Limit/Stop order...............................................................
@@ -280,7 +300,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 
 			}  // end switch
 
-			if (cnt > gRetryAttempts)
+			if (cnt > orRetryAttempts)
 				exit_loop = true;
 
 			if (exit_loop)
@@ -289,13 +309,13 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 				{
 					if (err != ERR_NO_ERROR  &&  err != ERR_NO_RESULT)
 						OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
-					else if (cnt > gRetryAttempts)
-						OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+					else if (cnt > orRetryAttempts)
+						OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 				}
 			}
 			else
 			{
-				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "Current Bid = " + DoubleToStr(MarketInfo(symbol, MODE_BID), digits) + ", Current Ask = " + DoubleToStr(MarketInfo(symbol, MODE_ASK), digits));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 				SleepRandomTime();
@@ -316,7 +336,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 		}
 		if (!limit_to_market)
 		{
-			OrderReliablePrint(fn, "Failed to execute stop or limit order after " + IntegerToString(gRetryAttempts) + " retries");
+			OrderReliablePrint(fn, "Failed to execute stop or limit order after " + IntegerToString(orRetryAttempts) + " retries");
 			OrderReliablePrint(fn, "Failed trade: " + OrderTypeToString(cmd) + ", " + DoubleToStr(volume, 2) + " lots,  " + symbol +
 			                   "@" + DoubleToStr(price, digits) + ", sl@" + DoubleToStr(stoploss, digits) + ", tp@" + DoubleToStr(takeprofit, digits));
 			OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -350,17 +370,20 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 			// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 			// Get current price and calculate slippage
 			RefreshRates();
-			if (cmd == OP_BUY)
+			if (point != 0)
 			{
-				M = 1.0;
-				priceNow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Ask
-				hasSlippedBy = (priceNow - price) / point;	// (Adjusted Point)
-			}
-			else if (cmd == OP_SELL)
-			{
-				M = -1.0;
-				priceNow = NormalizeDouble(MarketInfo(symbol, MODE_BID), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Bid
-				hasSlippedBy = (price - priceNow) / point;	// (Adjusted Point)
+				if (cmd == OP_BUY)
+				{
+					M = 1.0;
+					priceNow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Ask
+					hasSlippedBy = (priceNow - price) / point;	// (Adjusted Point)
+				}
+				else if (cmd == OP_SELL)
+				{
+					M = -1.0;
+					priceNow = NormalizeDouble(MarketInfo(symbol, MODE_BID), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Bid
+					hasSlippedBy = (price - priceNow) / point;	// (Adjusted Point)
+				}
 			}
 
 			// Check if slippage is more than caller's maximum allowed
@@ -426,19 +449,19 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 					break;
 			}  
 
-			if (cnt > gRetryAttempts)
+			if (cnt > orRetryAttempts)
 				exit_loop = true;
 
 			if (exit_loop)
 			{
 				if (err != ERR_NO_ERROR  &&  err != ERR_NO_RESULT)
 					OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
-				if (cnt > gRetryAttempts)
-					OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+				if (cnt > orRetryAttempts)
+					OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 			}
 			else
 			{
-				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 				SleepRandomTime();
 				RefreshRates();
@@ -458,7 +481,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 		}
 		
 		// If not successful, log and return -1
-		OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + IntegerToString(gRetryAttempts) + " retries");
+		OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + IntegerToString(orRetryAttempts) + " retries");
 		OrderReliablePrint(fn, "Failed trade: " + OrderTypeToString(cmd) + " " + DoubleToStr(volume, 2) + " lots  " + symbol +
 		                   "@" + DoubleToStr(price, digits) + " tp@" + DoubleToStr(takeprofit, digits) + " sl@" + DoubleToStr(stoploss, digits));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -517,7 +540,7 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -632,12 +655,12 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 
 			}  // end switch
 
-			if (cnt > gRetryAttempts)
+			if (cnt > orRetryAttempts)
 				exit_loop = true;
 
 			if (!exit_loop)
 			{
-				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + gRetryAttempts + ": Retryable error: " + OrderReliableErrTxt(err));
+				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + orRetryAttempts + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 				SleepRandomTime();
 			}
@@ -647,9 +670,9 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 				{
 					OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 				}
-				if (cnt > gRetryAttempts)
+				if (cnt > orRetryAttempts)
 				{
-					OrderReliablePrint(fn, "Retry attempts maxed at " + gRetryAttempts);
+					OrderReliablePrint(fn, "Retry attempts maxed at " + orRetryAttempts);
 				}
 			}
 		}
@@ -664,7 +687,7 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 			OrderReliablePrint(fn, "");
 			return(ticket); // SUCCESS!
 		}
-		OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + gRetryAttempts + " retries");
+		OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + orRetryAttempts + " retries");
 		OrderReliablePrint(fn, "Failed trade: " + OrderTypeToString(cmd) + " " + DoubleToStr(volume, 2) + " lots  " + symbol +
 		                   "@" + DoubleToStr(price, digits) + " tp@" + takeprofit + " sl@" + stoploss);
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -710,7 +733,7 @@ int OrderSendReliable2Step(string symbol, int cmd, double volume, double price,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -738,12 +761,13 @@ int OrderSendReliable2Step(string symbol, int cmd, double volume, double price,
 			double theOpenPrice = price;
 			if (OrderSelect(ticket, SELECT_BY_TICKET))
 			{
-				slipped = OrderOpenPrice() - price;
 				theOpenPrice = OrderOpenPrice();
+				slipped = theOpenPrice - price;
+				OrderReliablePrint(fn, "Selected ticket #" + IntegerToString(ticket) + ", OrderOpenPrice() = " + theOpenPrice + ", Orig Price = " + price + ", slipped = " + slipped);
 			}
 			else
 				OrderReliablePrint(fn, "Failed to select ticket #" + IntegerToString(ticket) + " after successful 2step placement; cannot recalculate SL & TP");
-			if (slipped > 0)
+			if (slipped != 0)
 			{
 				OrderReliablePrint(fn, "2step order slipped by: " + DoubleToStr(slipped, Digits) + "; SL & TP modified by same amount");
 				if (takeprofit != 0)	takeprofit += slipped;
@@ -794,7 +818,7 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -818,7 +842,7 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 		
 	OrderReliablePrint(fn, "");
 	OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
-	OrderReliablePrint(fn, "Attempted modify of #" + IntegerToString(ticket) + ", " + OrderTypeToString(type) + ", price:" + DoubleToStr(price, digits+1) +
+	OrderReliablePrint(fn, "Attempted modify of #" + IntegerToString(ticket) + ", " + OrderTypeToString(type) + ", price:" + DoubleToStr(price, digits) +
 	                   ", sl:" + DoubleToStr(stoploss, digits) + ", tp:" + DoubleToStr(takeprofit, digits) + 
 	                   ", exp:" + TimeToStr(expiration));
 
@@ -912,20 +936,20 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 			}  // end switch
 		}
 
-		if (cnt > gRetryAttempts)
+		if (cnt > orRetryAttempts)
 			exit_loop = true;
 
 		if (!exit_loop)
 		{
-			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 			SleepRandomTime();
 			RefreshRates();
 		}
 		else
 		{
-			if (cnt > gRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+			if (cnt > orRetryAttempts)
+				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 			else if (non_retryable_error)
 				OrderReliablePrint(fn, "Non-retryable error: "  + OrderReliableErrTxt(err));
 		}
@@ -949,7 +973,7 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute modify after " + IntegerToString(gRetryAttempts) + " retries");
+		OrderReliablePrint(fn, "Failed to execute modify after " + IntegerToString(orRetryAttempts) + " retries");
 		OrderReliablePrint(fn, "Failed modification: #"  + IntegerToString(ticket) + ", " + OrderTypeToString(type) + ", " + symbol +
 	                   	"@" + DoubleToStr(price, digits) + " sl@" + DoubleToStr(stoploss, digits) + " tp@" + DoubleToStr(takeprofit, digits));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -993,7 +1017,7 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -1012,12 +1036,14 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 	double point;
 	double bid, ask;
 	double sl, tp;
+	
+	// If this fails, we're probably in trouble
 	GetOrderDetails(ticket, symbol, type, digits, point, sl, tp, bid, ask);
 	// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 	OrderReliablePrint(fn, "");
 	OrderReliablePrint(fn, "º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º");
-	OrderReliablePrint(fn, "Attempted close of #" + IntegerToString(ticket) + " initial price:" + DoubleToStr(price, digits+1) +
+	OrderReliablePrint(fn, "Attempted close of #" + IntegerToString(ticket) + " initial price:" + DoubleToStr(price, digits) +
 	                   " lots:" + DoubleToStr(volume, 3) + " slippage:" + IntegerToString(slippage));
 
 
@@ -1040,17 +1066,20 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 		// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 		// Get current price and calculate slippage
 		RefreshRates();
-		if (type == OP_BUY)
+		if (point != 0)
 		{
-			priceNow = NormalizeDouble(MarketInfo(symbol, MODE_BID), digits);	// Close @ Bid
-			hasSlippedBy = (price - priceNow) / point;	// (Adjusted Point)
+			if (type == OP_BUY)
+			{
+				priceNow = NormalizeDouble(MarketInfo(symbol, MODE_BID), digits);	// Close @ Bid
+				hasSlippedBy = (price - priceNow) / point;	// (Adjusted Point)
+			}
+			else // if (type == OP_SELL)
+			{
+				priceNow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), digits);	// Close @ Ask
+				hasSlippedBy = (priceNow - price) / point;	// (Adjusted Point)
+			}
 		}
-		else // if (type == OP_SELL)
-		{
-			priceNow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), digits);	// Close @ Ask
-			hasSlippedBy = (priceNow - price) / point;	// (Adjusted Point)
-		}
-
+		
 		// Check if slippage is more than caller's maximum allowed
 		if (priceNow != price  &&  hasSlippedBy > slippage)
 		{
@@ -1115,19 +1144,19 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 			}  // end switch
 		}
 
-		if (cnt > gRetryAttempts)
+		if (cnt > orRetryAttempts)
 			exit_loop = true;
 
 		if (exit_loop)
 		{
-			if (cnt > gRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+			if (cnt > orRetryAttempts)
+				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 			else if (non_retryable_error)
 				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 		}
 		else
 		{
-			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 			SleepRandomTime();
 		}
@@ -1197,7 +1226,7 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -1221,7 +1250,7 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 
 	OrderReliablePrint(fn, "");
 	OrderReliablePrint(fn, "º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º  º");
-	OrderReliablePrint(fn, "Attempted close of #" + IntegerToString(ticket) + " initial price:" + DoubleToStr(price, digits+1) +
+	OrderReliablePrint(fn, "Attempted close of #" + IntegerToString(ticket) + " initial price:" + DoubleToStr(price, digits) +
 	                   " lots:" + DoubleToStr(price, 3) + " slippage:" + IntegerToString(slippage));
 
 
@@ -1241,25 +1270,28 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 
 	while (!exit_loop)
 	{
-		if (type == OP_BUY)
+		if (point != 0)
 		{
-			pnow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), digits); // we are buying at Ask
-			if (pnow > price)
+			if (type == OP_BUY)
 			{
-				// Do not allow slippage to go negative; will cause error
-				slippagenow = (int)(MathMax(0, slippage - (pnow - price) / point));
+				pnow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), digits); // we are buying at Ask
+				if (pnow > price)
+				{
+					// Do not allow slippage to go negative; will cause error
+					slippagenow = (int)(MathMax(0, slippage - (pnow - price) / point));
+				}
+			}
+			else if (type == OP_SELL)
+			{
+				pnow = NormalizeDouble(MarketInfo(symbol, MODE_BID), digits); // we are buying at Ask
+				if (pnow < price)
+				{
+					// Do not allow slippage to go negative; will cause error
+					slippagenow = (int)(MathMax(0, slippage - (price - pnow) / point));
+				}
 			}
 		}
-		else if (type == OP_SELL)
-		{
-			pnow = NormalizeDouble(MarketInfo(symbol, MODE_BID), digits); // we are buying at Ask
-			if (pnow < price)
-			{
-				// Do not allow slippage to go negative; will cause error
-				slippagenow = (int)(MathMax(0, slippage - (price - pnow) / point));
-			}
-		}
-
+		
 		result = OrderClose(ticket, volume, pnow, slippagenow, arrow_color);
 		err = GetLastError();
 
@@ -1305,20 +1337,20 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 			}  // end switch
 		}
 
-		if (cnt > gRetryAttempts)
+		if (cnt > orRetryAttempts)
 			exit_loop = true;
 
 		if (!exit_loop)
 		{
-			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 			SleepRandomTime();
 		}
 
 		if (exit_loop)
 		{
-			if (cnt > gRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+			if (cnt > orRetryAttempts)
+				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 			else if (non_retryable_error)
 				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 		}
@@ -1342,7 +1374,7 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(gRetryAttempts) + " retries");
+		OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(orRetryAttempts) + " retries");
 		OrderReliablePrint(fn, "Failed close: Ticket #" + IntegerToString(ticket) + " @ Price: " +
 	                   		DoubleToStr(pnow, digits) + " (Initial Price: " + DoubleToStr(price, digits) + "), Slippage: " + 
 	                   		IntegerToString(slippagenow) + " (Initial Slippage: " + IntegerToString(slippage) + ")");
@@ -1387,7 +1419,7 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 	// orders are not real-world, and always get placed optimally.  By 
 	// refactoring this option to be in this library, one no longer needs 
 	// to create similar code in each EA.
-	if (!gUseForTesting)
+	if (!orUseForTesting)
 	{
 		if (IsOptimization()  ||  IsTesting())
 		{
@@ -1472,19 +1504,19 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 			}  // end switch
 		}
 
-		if (cnt > gRetryAttempts)
+		if (cnt > orRetryAttempts)
 			exit_loop = true;
 
 		if (!exit_loop)
 		{
-			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(gRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
 			SleepRandomTime();
 		}
 		else
 		{
-			if (cnt > gRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(gRetryAttempts));
+			if (cnt > orRetryAttempts)
+				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 			else if (non_retryable_error)
 				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 		}
@@ -1499,7 +1531,7 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute delete after " + IntegerToString(gRetryAttempts) + " retries");
+		OrderReliablePrint(fn, "Failed to execute delete after " + IntegerToString(orRetryAttempts) + " retries");
 		OrderReliablePrint(fn, "Failed deletion: Ticket #" + IntegerToString(ticket));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
 	}
@@ -1527,16 +1559,16 @@ string OrderReliableErrTxt(int err)
 // Use level = 0 to Print nothing
 void OrderReliableSetErrorLevel(int level)
 {
-	gErrorLevel = level;
+	orErrorLevel = level;
 }
 
 
 void OrderReliablePrint(string f, string s)
 {
 	// Print to log prepended with stuff;
-	if (gErrorLevel >= 99 || (!(IsTesting() || IsOptimization())))
+	if (orErrorLevel >= 99 || (!(IsTesting() || IsOptimization())))
 	{
-		if (gErrorLevel > 0)
+		if (orErrorLevel > 0)
 			Print(f + " " + OrderReliableVersion + ":     " + s);
 	}
 }
@@ -1618,7 +1650,7 @@ void EnsureValidStops(string symbol, int cmd, double price, double& sl, double& 
 
 			sl = MathMax(sl, new_sl);
 		}
-		sl = NormalizeDouble(sl, (int)MarketInfo(symbol, MODE_DIGITS));
+		sl = NormalizeDouble(sl, digits);
 	}
 
 
@@ -1638,7 +1670,7 @@ void EnsureValidStops(string symbol, int cmd, double price, double& sl, double& 
 				new_tp = price - servers_min_stop;	// we are short
 				tp = MathMin(tp, new_tp);
 			}
-			tp = NormalizeDouble(tp, (int)MarketInfo(symbol, MODE_DIGITS));
+			tp = NormalizeDouble(tp, digits);
 		}
 	}
 	
@@ -1660,7 +1692,7 @@ void EnsureValidStops(string symbol, int cmd, double price, double& sl, double& 
 //  is too close to the pending's requested price.  Therefore we want to do 
 //  one of two things: 
 //
-//  If gUseLimitToMarket is enabled, then see if the actual and requested 
+//  If orUseLimitToMarket is enabled, then see if the actual and requested 
 //  prices are close enough to be within the requested slippage, and if so 
 //  return true to indicate a swap to a market order.
 //
@@ -1684,7 +1716,7 @@ bool EnsureValidPendPrice(int err, bool& fixed, string symbol, int cmd, double& 
 	string fn = __FUNCTION__ + "[]";
 
 	double 	servers_min_stop = MarketInfo(symbol, MODE_STOPLEVEL) * Point;
-	double 	old_price, hasSlippedBy;
+	double 	old_price, hasSlippedBy = 0;
 	double 	priceNow = 0;
 	
 	// Assume buy pendings relate to Ask, and sell pendings relate to Bid
@@ -1696,9 +1728,10 @@ bool EnsureValidPendPrice(int err, bool& fixed, string symbol, int cmd, double& 
 	// If we are too close to put in a limit/stop order so go to market.
 	if (MathAbs(priceNow - price) <= servers_min_stop)
 	{
-		if (gUseLimitToMarket)
+		if (orUseLimitToMarket)
 		{
-			hasSlippedBy = MathAbs(priceNow - price) / point;	// (Adjusted Point)
+			if (point != 0)
+				hasSlippedBy = MathAbs(priceNow - price) / point;	// (Adjusted Point)
 
 			// Check if slippage is more than caller's maximum allowed
 			if (priceNow != price  &&  hasSlippedBy > slippage)
@@ -1818,8 +1851,8 @@ void SleepRandomTime()
 	// Don't know what else to try; putting back random sleep time.
 	double rndm = MathRand() / 32768; // = 0.0 to 0.99999
 	
-	// Sleep from 20-to-(2*gSleepAveTime) ms
-	int ms = (int)MathRound(2 * gSleepAveTime * rndm);
+	// Sleep from 20-to-(2*orSleepAveTime) ms
+	int ms = (int)MathRound(2 * orSleepAveTime * rndm);
 	ms = MathMax(ms, 20);
 
 	Sleep(ms);
@@ -1855,7 +1888,7 @@ double AdjPoint(string sym="")
 //=============================================================================
 void LimitToMarket(bool limit2market)
 {
-	gUseLimitToMarket = limit2market;
+	orUseLimitToMarket = limit2market;
 }
 
 
@@ -1872,7 +1905,7 @@ void LimitToMarket(bool limit2market)
 //=============================================================================
 void OrderReliableUseForTesting(bool use)
 {
-	gUseForTesting = use;
+	orUseForTesting = use;
 }
 
 
@@ -1886,7 +1919,7 @@ void OrderReliableUseForTesting(bool use)
 //=============================================================================
 void OrderReliableAddSpreadToComment(bool use)
 {
-	gAddSpreadToComment = use;
+	orAddSpreadToComment = use;
 }
 
 
@@ -1907,6 +1940,8 @@ bool GetOrderDetails(int ticket, string& symb, int& type, int& digits,
 {
 	string fn = __FUNCTION__ + "[]";
 
+	bool retVal = true;
+	
 	// If this is existing order, select it and get symbol and type
 	if (exists)
 	{
@@ -1938,12 +1973,35 @@ bool GetOrderDetails(int ticket, string& symb, int& type, int& digits,
 		point *= 10;
 		
 	// If this is a forex pair (i.e. symbol length == 6), then digits should not be zero
-	if (digits == 0  &&  StringLen(MySymbolVal2String(MySymbolConst2Val(Symbol()))) == 6)
+	if (StringLen(MySymbolVal2String(MySymbolConst2Val(symb))) == 6)
 	{
-		OrderReliablePrint(fn, "error: MarketInfo(symbol (" + symb + "), MODE_DIGITS) == 0");
-		return(false);
+		if (digits == 0)
+		{
+			// Probably not good.  Some instruments CAN have zero digits (like BTCUSD -also 6 letters) 
+			// but first thing to try is see if we get a non-zero for first 6 letters.
+			digits = (int)MarketInfo(StringSubstr(symb, 0, 6), MODE_DIGITS);
+			if (digits == 0)
+				OrderReliablePrint(fn, "error(?): MarketInfo(symbol(" + symb + "), MODE_DIGITS) == 0");
+		}
+		if (point == 0)
+		{
+			// DEFINITELY not good.  Point could be 1 or 10 or 0.1, but NOT zero; this will cause 
+			// divide-by-zero errors. First thing to try is see if we get a non-zero for first 6 letters.
+			point = (int)MarketInfo(StringSubstr(symb, 0, 6), MODE_POINT);
+			if (point != 0)
+			{
+				if (point == 0.001  ||  point == 0.00001)
+					point *= 10;
+			}
+			else
+			{
+				OrderReliablePrint(fn, "ERROR!!: MarketInfo(symbol(" + symb + "), MODE_POINT) == 0");
+				OrderReliablePrint(fn, "ANY OPERATION DIVIDING BY POINT IS THUS DISABLED (Slippage calculation)");
+				OrderReliablePrint(fn, "WILL CONTINUE TO ATTEMPT OPERATION, BUT NO PROMISES");
+			}
+		}
 	}
-	else if (exists)
+	if (exists)
 	{
 		tp = NormalizeDouble(tp, digits);
 		sl = NormalizeDouble(sl, digits);
@@ -1951,155 +2009,218 @@ bool GetOrderDetails(int ticket, string& symb, int& type, int& digits,
 		ask = NormalizeDouble(ask, digits);
 	}
 	
-	return(true);
+	return(retVal);
 }
 
 //=============================================================================
-// 20Jul16: Not sure what BS this is; all this ised to work, but not sure how.  
-// DerksUtils includes OrderReliable, but not vice versa...  So copied these 
-// functions from DerksUtils and changed the names.  Also, abive, where used, 
-// it WAS: StringLen(MySymbolVal2String(Symbol())) == 6), which was wrong.
+//  11Sep20:
+//  This has had an illustrious history.  First I only had main 28 plud gold 
+//  and silver, which if course had problems with other symbols.  Then in 
+//  Feb/Mar, 2020 changed it entirely to iterate through the market watch and 
+//  return the index.  This works great EXCEPT that one can change the order 
+//  of the market watch and now you get a diff index for the symbol from day 
+//  to day.
+//
+//  Therefore I decided to make a hybrid, where first, it tries to use the old 
+//  way, so it will try to match symbols first, and if it cannot, it will use 
+//  Market Watch index.  However this presents a problem: See below in 
+//  SymbolVal2String() header.
 //=============================================================================
-int MySymbolConst2Val(string symbol) 
+int MySymbolConst2Val(string symbol="") 
 {
-	// Handle problem of trailing chars on mini accounts.
-	string mySymbol = StringSubstr(symbol,0,6); 
+	if (symbol == "")	symbol = Symbol();
 	
-	if (mySymbol == "AUDCAD") 	return(1);
-	if (mySymbol == "AUDJPY") 	return(2);
-	if (mySymbol == "AUDNZD") 	return(3);
-	if (mySymbol == "AUDUSD") 	return(4);
-	if (mySymbol == "CADJPY") 	return(5);
-	if (mySymbol == "CHFJPY") 	return(6);
-	if (mySymbol == "EURAUD") 	return(7);
-	if (mySymbol == "EURCAD") 	return(8);
-	if (mySymbol == "EURCHF") 	return(9);
-	if (mySymbol == "EURGBP") 	return(10);
-	if (mySymbol == "EURJPY") 	return(11);
-	if (mySymbol == "EURUSD") 	return(12);
-	if (mySymbol == "GBPCHF") 	return(13);
-	if (mySymbol == "GBPJPY") 	return(14);
-	if (mySymbol == "GBPUSD") 	return(15);
-	if (mySymbol == "NZDJPY") 	return(16);
-	if (mySymbol == "NZDUSD") 	return(17);
-	if (mySymbol == "USDCAD") 	return(18);
-	if (mySymbol == "USDCHF") 	return(19);
-	if (mySymbol == "USDJPY")	return(20);
+	string mySymbol = symbol;
+	StringToUpper(mySymbol);
+	if (StringFind(mySymbol, "AUDCAD") != -1)	return(1);
+	if (StringFind(mySymbol, "AUDCHF") != -1)	return(2);
+	if (StringFind(mySymbol, "AUDJPY") != -1)	return(3);
+	if (StringFind(mySymbol, "AUDNZD") != -1)	return(4);
+	if (StringFind(mySymbol, "AUDUSD") != -1)	return(5);
+	if (StringFind(mySymbol, "CADCHF") != -1)	return(6);
+	if (StringFind(mySymbol, "CADJPY") != -1)	return(7);
+	if (StringFind(mySymbol, "CHFJPY") != -1)	return(8);
+	if (StringFind(mySymbol, "EURAUD") != -1)	return(9);
+	if (StringFind(mySymbol, "EURCAD") != -1)	return(10);
+	if (StringFind(mySymbol, "EURCHF") != -1)	return(11);
+	if (StringFind(mySymbol, "EURGBP") != -1)	return(12);
+	if (StringFind(mySymbol, "EURJPY") != -1)	return(13);
+	if (StringFind(mySymbol, "EURNZD") != -1)	return(14);
+	if (StringFind(mySymbol, "EURUSD") != -1)	return(15);
+	if (StringFind(mySymbol, "GBPAUD") != -1)	return(16);
+	if (StringFind(mySymbol, "GBPCAD") != -1)	return(17);
+	if (StringFind(mySymbol, "GBPCHF") != -1)	return(18);
+	if (StringFind(mySymbol, "GBPJPY") != -1)	return(19);
+	if (StringFind(mySymbol, "GBPNZD") != -1)	return(20);
+	if (StringFind(mySymbol, "GBPUSD") != -1)	return(21);
+	if (StringFind(mySymbol, "NZDCAD") != -1)	return(22);
+	if (StringFind(mySymbol, "NZDCHF") != -1)	return(23);
+	if (StringFind(mySymbol, "NZDJPY") != -1)	return(24);
+	if (StringFind(mySymbol, "NZDUSD") != -1)	return(25);
+	if (StringFind(mySymbol, "USDCAD") != -1)	return(26);
+	if (StringFind(mySymbol, "USDCHF") != -1)	return(27);
+	if (StringFind(mySymbol, "USDJPY") != -1)	return(28);
+	if (StringFind(mySymbol, "XAGUSD") != -1)	return(29);
+	if (StringFind(mySymbol, "SILVER") != -1)	return(29);
+	if (StringFind(mySymbol, "XAUUSD") != -1)	return(30);
+	if (StringFind(mySymbol, "GOLD") != -1)		return(30);
 	
 	// These symbols were added 26Sep10
-	if (mySymbol == "AUDCHF") 	return(22);
-	if (mySymbol == "AUDDKK") 	return(23);
-	if (mySymbol == "AUDNOK") 	return(24);
-	if (mySymbol == "AUDSEK") 	return(25);
-	if (mySymbol == "CADCHF") 	return(26);
-	if (mySymbol == "CHFNOK") 	return(27);
-	if (mySymbol == "EURDKK")	return(28);
-	if (mySymbol == "EURNZD") 	return(29);
-	if (mySymbol == "EURPLN") 	return(30);
-	if (mySymbol == "EURSEK")	return(31);
-	if (mySymbol == "EURSGD") 	return(32);
-	if (mySymbol == "EURZAR")	return(33);
-	if (mySymbol == "GBPAUD") 	return(34);
-	if (mySymbol == "GBPCAD") 	return(35);
-	if (mySymbol == "GBPNOK") 	return(36);
-	if (mySymbol == "GBPNZD") 	return(37);
-	if (mySymbol == "GBPSGD") 	return(38);
-	if (mySymbol == "NOKJPY") 	return(39);
-	if (mySymbol == "NZDCAD") 	return(40);
-	if (mySymbol == "NZDCHF") 	return(41);
-	if (mySymbol == "NZDGBP") 	return(42);
-	if (mySymbol == "SEKJPY") 	return(43);
-	if (mySymbol == "USDAED")	return(44);
-	if (mySymbol == "USDBHD")	return(45);
-	if (mySymbol == "USDDKK")	return(46);
-	if (mySymbol == "USDEGP")	return(47);
-	if (mySymbol == "USDHKD")	return(48);
-	if (mySymbol == "USDJOD")	return(49);
-	if (mySymbol == "USDKWD")	return(50);
-	if (mySymbol == "USDMXN")	return(51);
-	if (mySymbol == "USDNOK")	return(52);
-	if (mySymbol == "USDPLN")	return(53);
-	if (mySymbol == "USDQAR")	return(54);
-	if (mySymbol == "USDSAR")	return(55);
-	if (mySymbol == "USDSEK")	return(56);
-	if (mySymbol == "USDSGD")	return(57);
-	if (mySymbol == "USDTHB")	return(58);
-	if (mySymbol == "USDZAR")	return(59);
-	if (mySymbol == "XAGUSD")	return(60);
-	if (mySymbol == "XAUUSD")	return(61);
+	if (StringFind(mySymbol, "AUDDKK") != -1)	return(31);
+	if (StringFind(mySymbol, "AUDNOK") != -1)	return(32);
+	if (StringFind(mySymbol, "AUDSEK") != -1)	return(33);
+	if (StringFind(mySymbol, "CHFNOK") != -1)	return(34);
+	if (StringFind(mySymbol, "EURDKK") != -1)	return(35);
+	if (StringFind(mySymbol, "EURPLN") != -1)	return(36);
+	if (StringFind(mySymbol, "EURSEK") != -1)	return(37);
+	if (StringFind(mySymbol, "EURSGD") != -1)	return(38);
+	if (StringFind(mySymbol, "EURZAR") != -1)	return(39);
+	if (StringFind(mySymbol, "GBPNOK") != -1)	return(40);
+	if (StringFind(mySymbol, "GBPNZD") != -1)	return(41);
+	if (StringFind(mySymbol, "GBPSGD") != -1)	return(42);
+	if (StringFind(mySymbol, "NOKJPY") != -1)	return(43);
+	if (StringFind(mySymbol, "SEKJPY") != -1)	return(44);
+	if (StringFind(mySymbol, "USDAED") != -1)	return(45);
+	if (StringFind(mySymbol, "USDBHD") != -1)	return(46);
+	if (StringFind(mySymbol, "USDDKK") != -1)	return(47);
+	if (StringFind(mySymbol, "USDEGP") != -1)	return(48);
+	if (StringFind(mySymbol, "USDHKD") != -1)	return(49);
+	if (StringFind(mySymbol, "USDJOD") != -1)	return(50);
+	if (StringFind(mySymbol, "USDKWD") != -1)	return(51);
+	if (StringFind(mySymbol, "USDMXN") != -1)	return(52);
+	if (StringFind(mySymbol, "USDNOK") != -1)	return(53);
+	if (StringFind(mySymbol, "USDPLN") != -1)	return(54);
+	if (StringFind(mySymbol, "USDQAR") != -1)	return(55);
+	if (StringFind(mySymbol, "USDSAR") != -1)	return(56);
+	if (StringFind(mySymbol, "USDSEK") != -1)	return(57);
+	if (StringFind(mySymbol, "USDSGD") != -1)	return(58);
+	if (StringFind(mySymbol, "USDTHB") != -1)	return(59);
+	if (StringFind(mySymbol, "USDZAR") != -1)	return(60);
 	
-	// Originally, this was "other"; kept 
-	// the same for backward compatability
-	return(21);
+	// 11Sep20:
+	// Use this as last resort, if we got this far...
+	orNonStandardSymbol = true;
+	
+	// In trying to figure out a better way; for 
+	// symbols that are non-standard, came across 
+	// code to iterate through the Market list.  
+	// Lets try using it for now instead:
+	// It appears that the list is alphabetical, 
+	// and we can get all symbols (false) or just 
+	// the ones in Market Watch (true).
+	// This varies broker to broker, but that's fine
+	for (int n=0; n < SymbolsTotal(false); n++)
+	{
+		string name = SymbolName(n, false);
+		if (name == symbol)
+			break;
+	}
+	return(n+1);	// Don't use zero
 }
 
 
+//=============================================================================
+//  11Sep20:
+//  The problem with the solution above is converting back. SymbolVal2String() 
+//  is ALMOST never used.  I saw a reference in Trend-Profiteer-Ind.mq4, 
+//  Trend-Profiteer.mq4, and ScheduledNewsEA.mq4, as well as a couple others 
+//  in unimportant FBLib archives.  Still, cannot design something that can 
+//  break, so I devised a primitive solution:
+//
+//  Any EA/Ind using this would of course have it's own instance of the code, 
+//  and would almost* certainly have to call SymbolConst2Val() before 
+//  SymbolVal2String(), so if the former cannot find it conventionally, set a 
+//  global called orNonStandardSymbol.  That way, we can check it and convert 
+//  back the same way.
+//
+//  *If it's used another way, we risk error, but that's unhedard of so far.
+//=============================================================================
 string MySymbolVal2String(int val) 
 {
-	if (val == 1) 	return("AUDCAD");
-	if (val == 2) 	return("AUDJPY");
-	if (val == 3) 	return("AUDNZD");
-	if (val == 4) 	return("AUDUSD");
-	if (val == 5) 	return("CADJPY");
-	if (val == 6) 	return("CHFJPY");
-	if (val == 7) 	return("EURAUD");
-	if (val == 8) 	return("EURCAD");
-	if (val == 9) 	return("EURCHF");
-	if (val == 10) 	return("EURGBP");
-	if (val == 11) 	return("EURJPY");
-	if (val == 12) 	return("EURUSD");
-	if (val == 13) 	return("GBPCHF");
-	if (val == 14) 	return("GBPJPY");
-	if (val == 15) 	return("GBPUSD");
-	if (val == 16) 	return("NZDJPY");
-	if (val == 17) 	return("NZDUSD");
-	if (val == 18) 	return("USDCAD");
-	if (val == 19) 	return("USDCHF");
-	if (val == 20)	return("USDJPY");
+	if (orNonStandardSymbol)
+	{
+		// 11Sep20:
+		// Use this if flagged to do so
+		
+		// In trying to figure out a better way; for 
+		// symbols that are non-standard, came across 
+		// code to iterate through the Market list.  
+		// Lets try using it for now instead:
+		// SymbolConst2Val returns the symbol index 
+		// so we should only need to return it's name.
+		// This varies broker to broker, but not much 
+		// to be done about that.
+		return(SymbolName(val-1, false));
+	}
+	
+	// Going out on a limb here and guessing that if the name we intended to return 
+	// is contained in the Symbol() name for this chart, then lets return the actual 
+	// Symbol() name.  e.g. If the Symbol was EURUSD.lmax, and SymbolConst2Val() 
+	// returned 15, then when we convert 15 back, if the chart pair contains "EURUSD", 
+	// then lets return the Symbol (EURUSD.lmax instead of just EURUSD). 
+	if (val == 1) 	return((StringFind(Symbol(), "AUDCAD") != -1) ? Symbol() : "AUDCAD");
+	if (val == 2)	return((StringFind(Symbol(), "AUDCHF") != -1) ? Symbol() : "AUDCHF");
+	if (val == 3) 	return((StringFind(Symbol(), "AUDJPY") != -1) ? Symbol() : "AUDJPY");
+	if (val == 4) 	return((StringFind(Symbol(), "AUDNZD") != -1) ? Symbol() : "AUDNZD");
+	if (val == 5) 	return((StringFind(Symbol(), "AUDUSD") != -1) ? Symbol() : "AUDUSD");
+	if (val == 6)	return((StringFind(Symbol(), "CADCHF") != -1) ? Symbol() : "CADCHF");
+	if (val == 7) 	return((StringFind(Symbol(), "CADJPY") != -1) ? Symbol() : "CADJPY");
+	if (val == 8) 	return((StringFind(Symbol(), "CHFJPY") != -1) ? Symbol() : "CHFJPY");
+	if (val == 9) 	return((StringFind(Symbol(), "EURAUD") != -1) ? Symbol() : "EURAUD");
+	if (val == 10) 	return((StringFind(Symbol(), "EURCAD") != -1) ? Symbol() : "EURCAD");
+	if (val == 11) 	return((StringFind(Symbol(), "EURCHF") != -1) ? Symbol() : "EURCHF");
+	if (val == 12) 	return((StringFind(Symbol(), "EURGBP") != -1) ? Symbol() : "EURGBP");
+	if (val == 13) 	return((StringFind(Symbol(), "EURJPY") != -1) ? Symbol() : "EURJPY");
+	if (val == 14)	return((StringFind(Symbol(), "EURNZD") != -1) ? Symbol() : "EURNZD");
+	if (val == 15) 	return((StringFind(Symbol(), "EURUSD") != -1) ? Symbol() : "EURUSD");
+	if (val == 16)	return((StringFind(Symbol(), "GBPAUD") != -1) ? Symbol() : "GBPAUD");
+	if (val == 17)	return((StringFind(Symbol(), "GBPCAD") != -1) ? Symbol() : "GBPCAD");
+	if (val == 18) 	return((StringFind(Symbol(), "GBPCHF") != -1) ? Symbol() : "GBPCHF");
+	if (val == 19) 	return((StringFind(Symbol(), "GBPJPY") != -1) ? Symbol() : "GBPJPY");
+	if (val == 20)	return((StringFind(Symbol(), "GBPNZD") != -1) ? Symbol() : "GBPNZD");
+	if (val == 21) 	return((StringFind(Symbol(), "GBPUSD") != -1) ? Symbol() : "GBPUSD");
+	if (val == 22)	return((StringFind(Symbol(), "NZDCAD") != -1) ? Symbol() : "NZDCAD");
+	if (val == 23)	return((StringFind(Symbol(), "NZDCHF") != -1) ? Symbol() : "NZDCHF");
+	if (val == 24) 	return((StringFind(Symbol(), "NZDJPY") != -1) ? Symbol() : "NZDJPY");
+	if (val == 25) 	return((StringFind(Symbol(), "NZDUSD") != -1) ? Symbol() : "NZDUSD");
+	if (val == 26) 	return((StringFind(Symbol(), "USDCAD") != -1) ? Symbol() : "USDCAD");
+	if (val == 27) 	return((StringFind(Symbol(), "USDCHF") != -1) ? Symbol() : "USDCHF");
+	if (val == 28)	return((StringFind(Symbol(), "USDJPY") != -1) ? Symbol() : "USDJPY");
+	if (val == 29)	return((StringFind(Symbol(), "XAGUSD") != -1  ||  
+							StringFind(Symbol(), "SILVER") != -1) ? Symbol() : "XAGUSD");
+	if (val == 30)	return((StringFind(Symbol(), "XAUUSD") != -1  ||  
+							StringFind(Symbol(), "GOLD")   != -1) ? Symbol() : "XAUUSD");
 	
 	// These symbols were added 26Sep10
-	if (val == 22)	return("AUDCHF");
-	if (val == 23)	return("AUDDKK");
-	if (val == 24)	return("AUDNOK");
-	if (val == 25)	return("AUDSEK");
-	if (val == 26)	return("CADCHF");
-	if (val == 27)	return("CHFNOK");
-	if (val == 28)	return("EURDKK");
-	if (val == 29)	return("EURNZD");
-	if (val == 30)	return("EURPLN");
-	if (val == 31)	return("EURSEK");
-	if (val == 32)	return("EURSGD");
-	if (val == 33)	return("EURZAR");
-	if (val == 34)	return("GBPAUD");
-	if (val == 35)	return("GBPCAD");
-	if (val == 36)	return("GBPNOK");
-	if (val == 37)	return("GBPNZD");
-	if (val == 38)	return("GBPSGD");
-	if (val == 39)	return("NOKJPY");
-	if (val == 40)	return("NZDCAD");
-	if (val == 41)	return("NZDCHF");
-	if (val == 42)	return("NZDGBP");
-	if (val == 43)	return("SEKJPY");
-	if (val == 44)	return("USDAED");
-	if (val == 45)	return("USDBHD");
-	if (val == 46)	return("USDDKK");
-	if (val == 47)	return("USDEGP");
-	if (val == 48)	return("USDHKD");
-	if (val == 49)	return("USDJOD");
-	if (val == 50)	return("USDKWD");
-	if (val == 51)	return("USDMXN");
-	if (val == 52)	return("USDNOK");
-	if (val == 53)	return("USDPLN");
-	if (val == 54)	return("USDQAR");
-	if (val == 55)	return("USDSAR");
-	if (val == 56)	return("USDSEK");
-	if (val == 57)	return("USDSGD");
-	if (val == 58)	return("USDTHB");
-	if (val == 59)	return("USDZAR");
-	if (val == 60)	return("XAGUSD");
-	if (val == 61)	return("XAUUSD");
-	
-	return("Unrecognized Pair");
+	if (val == 31)	return((StringFind(Symbol(), "AUDDKK") != -1) ? Symbol() : "AUDDKK");
+	if (val == 32)	return((StringFind(Symbol(), "AUDNOK") != -1) ? Symbol() : "AUDNOK");
+	if (val == 33)	return((StringFind(Symbol(), "AUDSEK") != -1) ? Symbol() : "AUDSEK");
+	if (val == 34)	return((StringFind(Symbol(), "CHFNOK") != -1) ? Symbol() : "CHFNOK");
+	if (val == 35)	return((StringFind(Symbol(), "EURDKK") != -1) ? Symbol() : "EURDKK");
+	if (val == 36)	return((StringFind(Symbol(), "EURPLN") != -1) ? Symbol() : "EURPLN");
+	if (val == 37)	return((StringFind(Symbol(), "EURSEK") != -1) ? Symbol() : "EURSEK");
+	if (val == 38)	return((StringFind(Symbol(), "EURSGD") != -1) ? Symbol() : "EURSGD");
+	if (val == 39)	return((StringFind(Symbol(), "EURZAR") != -1) ? Symbol() : "EURZAR");
+	if (val == 40)	return((StringFind(Symbol(), "GBPNOK") != -1) ? Symbol() : "GBPNOK");
+	if (val == 41)	return((StringFind(Symbol(), "GBPNZD") != -1) ? Symbol() : "GBPNZD");
+	if (val == 42)	return((StringFind(Symbol(), "GBPSGD") != -1) ? Symbol() : "GBPSGD");
+	if (val == 43)	return((StringFind(Symbol(), "NOKJPY") != -1) ? Symbol() : "NOKJPY");
+	if (val == 44)	return((StringFind(Symbol(), "SEKJPY") != -1) ? Symbol() : "SEKJPY");
+	if (val == 45)	return((StringFind(Symbol(), "USDAED") != -1) ? Symbol() : "USDAED");
+	if (val == 46)	return((StringFind(Symbol(), "USDBHD") != -1) ? Symbol() : "USDBHD");
+	if (val == 47)	return((StringFind(Symbol(), "USDDKK") != -1) ? Symbol() : "USDDKK");
+	if (val == 48)	return((StringFind(Symbol(), "USDEGP") != -1) ? Symbol() : "USDEGP");
+	if (val == 49)	return((StringFind(Symbol(), "USDHKD") != -1) ? Symbol() : "USDHKD");
+	if (val == 50)	return((StringFind(Symbol(), "USDJOD") != -1) ? Symbol() : "USDJOD");
+	if (val == 51)	return((StringFind(Symbol(), "USDKWD") != -1) ? Symbol() : "USDKWD");
+	if (val == 52)	return((StringFind(Symbol(), "USDMXN") != -1) ? Symbol() : "USDMXN");
+	if (val == 53)	return((StringFind(Symbol(), "USDNOK") != -1) ? Symbol() : "USDNOK");
+	if (val == 54)	return((StringFind(Symbol(), "USDPLN") != -1) ? Symbol() : "USDPLN");
+	if (val == 55)	return((StringFind(Symbol(), "USDQAR") != -1) ? Symbol() : "USDQAR");
+	if (val == 56)	return((StringFind(Symbol(), "USDSAR") != -1) ? Symbol() : "USDSAR");
+	if (val == 57)	return((StringFind(Symbol(), "USDSEK") != -1) ? Symbol() : "USDSEK");
+	if (val == 58)	return((StringFind(Symbol(), "USDSGD") != -1) ? Symbol() : "USDSGD");
+	if (val == 59)	return((StringFind(Symbol(), "USDTHB") != -1) ? Symbol() : "USDTHB");
+	if (val == 60)	return((StringFind(Symbol(), "USDZAR") != -1) ? Symbol() : "USDZAR");
+	return("Unknown");
 }
-
-
