@@ -115,12 +115,17 @@
 //	Saw slippage on stops: changed 'if (slipped > 0)' to 'if (slipped != 0)' 
 //	in OrderSendReliable2Step(). This WAS indeed a bug.  For buys, if 
 //	slipped < 0 it means you got in at a better price, so the benefits of 
-//	moving the stops may be debateable, but for a sell, slipped < 0 means 
+//	moving the stops may be debatable, but for a sell, slipped < 0 means 
 //	you got in on a worse price...
 //
 //	Updated MySymbolVal2String() and MySymbolConst2Val() with versions more 
-//	functional with non-forex pairs.  Added global orNonStandardSymbol.
+//	functional with non-forex pairs.  Added global or NonStandardSymbol.
 //	Changed globals to be prefaced with "or". 
+//
+//  v42, 27Aug21:
+//	Did a lot of refactoring in switch statements; not much functionally 
+//	different, but hopefully some improvements -changed trade disabled and 
+//	market closed to be non-retryable errors.
 //
 //===========================================================================
 
@@ -130,7 +135,7 @@
 #include <stdlib.mqh>
 #include <stderror.mqh>
 
-string 	OrderReliableVersion = "v41";
+string 	OrderReliableVersion = "v42";
 
 int 	orRetryAttempts			= 5;
 double 	orSleepAveTime			= 50.0;
@@ -190,6 +195,9 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	string fn = __FUNCTION__ + "[]";
 
 	int ticket = -1;
+	bool nonRetryableError = false;
+	bool skipSleep = false;
+
 	// ========================================================================
 	// If testing or optimizing, there is no need to use this lib, as the 
 	// orders are not real-world, and always get placed optimally.  By 
@@ -213,7 +221,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	if (adjPoint == 0.00001  ||  adjPoint == 0.001)
 		adjPoint *= 10;
 	int digits;
-	double point, M = 1.0;
+	double point;
 	double bid, ask;
 	double sl, tp;
 	double priceNow = 0;
@@ -239,7 +247,7 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	int cnt;
 	GetLastError(); // clear the global variable.
 	int err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 	bool limit_to_market = false;
 	bool fixed_invalid_price = false;
 
@@ -252,8 +260,10 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	if (cmd > OP_SELL)
 	{
 		cnt = 0;
-		while (!exit_loop)
+		while (!exitLoop)
 		{
+			skipSleep = false;
+			
 			// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 			// Calculating our own slippage internally should not need to be done for pending orders; see market orders below
 			// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
@@ -265,21 +275,30 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 
 			switch (err)
 			{
+				// No error
 				case ERR_NO_ERROR:
-					exit_loop = true;
+					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderSend() still returned false; exiting");
+					exitLoop = true;
+					break;
+
+				// Non-retryable error
+				case ERR_TRADE_DISABLED:
+				case ERR_MARKET_CLOSED:
+				case ERR_INVALID_TRADE_PARAMETERS:
+					nonRetryableError = true;
+					exitLoop = true;
 					break;
 
 				// retryable errors
+				case ERR_PRICE_CHANGED:
+				case ERR_REQUOTE:
+					skipSleep = true;			// we can apparently retry immediately according to MT docs (so no sleep)
 				case ERR_SERVER_BUSY:
 				case ERR_NO_CONNECTION:
 				case ERR_OFF_QUOTES:
 				case ERR_BROKER_BUSY:
 				case ERR_TRADE_CONTEXT_BUSY:
 				case ERR_TRADE_TIMEOUT:
-				case ERR_TRADE_DISABLED:
-				case ERR_PRICE_CHANGED:
-				case ERR_REQUOTE:
-				case ERR_MARKET_CLOSED:	// Added 16Jun20
 					cnt++;
 					break;
 
@@ -288,37 +307,39 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 					limit_to_market = EnsureValidPendPrice(err, fixed_invalid_price, symbol, cmd, price, 
 														   stoploss, takeprofit, slippage, point, digits);
 					if (limit_to_market) 
-						exit_loop = true;
+						exitLoop = true;
 					cnt++;
 					break;
 
-				case ERR_INVALID_TRADE_PARAMETERS:
-				default:
-					// an apparently serious error.
-					exit_loop = true;
+				default:	// an apparently serious error.
+					OrderReliablePrint(fn, "Unknown error occured: " + err);
+					nonRetryableError = true;
+					exitLoop = true;
 					break;
 
 			}  // end switch
 
 			if (cnt > orRetryAttempts)
-				exit_loop = true;
+				exitLoop = true;
 
-			if (exit_loop)
+			if (exitLoop)
 			{
 				if (!limit_to_market)
 				{
-					if (err != ERR_NO_ERROR  &&  err != ERR_NO_RESULT)
+					if (nonRetryableError)
 						OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 					else if (cnt > orRetryAttempts)
 						OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
 				}
+				break;
 			}
 			else
 			{
 				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "Current Bid = " + DoubleToStr(MarketInfo(symbol, MODE_BID), digits) + ", Current Ask = " + DoubleToStr(MarketInfo(symbol, MODE_ASK), digits));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
-				SleepRandomTime();
+				if (!skipSleep)
+					SleepRandomTime();
 				RefreshRates();
 			}
 		}
@@ -336,7 +357,8 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 		}
 		if (!limit_to_market)
 		{
-			OrderReliablePrint(fn, "Failed to execute stop or limit order after " + IntegerToString(orRetryAttempts) + " retries");
+			if (cnt > 0)
+				OrderReliablePrint(fn, "Failed to execute stop or limit order after " + IntegerToString(cnt-1) + " retries");
 			OrderReliablePrint(fn, "Failed trade: " + OrderTypeToString(cmd) + ", " + DoubleToStr(volume, 2) + " lots,  " + symbol +
 			                   "@" + DoubleToStr(price, digits) + ", sl@" + DoubleToStr(stoploss, digits) + ", tp@" + DoubleToStr(takeprofit, digits));
 			OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -350,37 +372,35 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 	{
 		OrderReliablePrint(fn, "Going from stop/limit order to market order because market is too close.");
 		cmd %= 2;
-		if (cmd == OP_BUY)	price = ask;
-		else 				price = bid;
 	}
 
 	// We now have a market order.
 	err = GetLastError(); // so we clear the global variable.
 	err = 0;
 	ticket = -1;
-	exit_loop = false;
+	exitLoop = false;
+	nonRetryableError = false;
 
 
 	// Market order..........................................................
 	if (cmd == OP_BUY  ||  cmd == OP_SELL)
 	{
 		cnt = 0;
-		while (!exit_loop)
+		while (!exitLoop)
 		{
+			skipSleep = false;
+			
 			// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 			// Get current price and calculate slippage
-			RefreshRates();
 			if (point != 0)
 			{
 				if (cmd == OP_BUY)
 				{
-					M = 1.0;
 					priceNow = NormalizeDouble(MarketInfo(symbol, MODE_ASK), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Ask
 					hasSlippedBy = (priceNow - price) / point;	// (Adjusted Point)
 				}
 				else if (cmd == OP_SELL)
 				{
-					M = -1.0;
 					priceNow = NormalizeDouble(MarketInfo(symbol, MODE_BID), (int)MarketInfo(symbol, MODE_DIGITS));	// Open @ Bid
 					hasSlippedBy = (price - priceNow) / point;	// (Adjusted Point)
 				}
@@ -400,8 +420,12 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 				{
 					// If the price has slipped "acceptably" (either negative or within 
 					// "Slippage" param), then we need to adjust the SL and TP accordingly
+					double M = (cmd == OP_BUY) ? 1.0 : -1.0;
 					if (stoploss != 0)		stoploss += M * hasSlippedBy;
 					if (takeprofit != 0)	takeprofit += M * hasSlippedBy;
+					
+					// Price may move again while we try this order. Must adjust Spippage by amount already slipped
+					slippage -= hasSlippedBy;
 					OrderReliablePrint(fn, "Actual Price (Ask for buy, Bid for sell) = " + DoubleToStr(priceNow, Digits+1) + "; Requested Price = " + DoubleToStr(price, Digits) + "; Slippage from Requested Price = " + DoubleToStr(hasSlippedBy, 1) + " pips (\'positive slippage\').  Attempting order at market");
 				}
 				//OrderReliablePrint(fn, "About to call OrderSend(), comment = " + comment);
@@ -411,59 +435,72 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 			}
 			// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 
+			// Exclusively for debugging
+			if (err == ERR_NO_ERROR)
+				OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderSend() still returned false; exiting");
+			else if (err == ERR_INVALID_PRICE)
+			{
+				if (cmd == OP_BUY)
+					OrderReliablePrint(fn, "INVALID PRICE ERROR - Requested Price: " + DoubleToStr(price, Digits) + "; Ask = " + DoubleToStr(MarketInfo(symbol, MODE_ASK), Digits));
+				else
+					OrderReliablePrint(fn, "INVALID PRICE ERROR - Requested Price: " + DoubleToStr(price, Digits) + "; Bid = " + DoubleToStr(MarketInfo(symbol, MODE_BID), Digits));
+			}
+			else if (err == ERR_INVALID_STOPS)
+				OrderReliablePrint(fn, "INVALID STOPS on attempted " + OrderTypeToString(cmd) + " : " + DoubleToStr(volume, 2) + " lots " + " @ " + DoubleToStr(price, Digits) + ", SL = " + DoubleToStr(stoploss, Digits) + ", TP = " + DoubleToStr(takeprofit, Digits));
+				
 			switch (err)
 			{
+				// No error
 				case ERR_NO_ERROR:
-					exit_loop = true;
+					exitLoop = true;
+					break;
+					
+				// Non-retryable error
+				case ERR_TRADE_DISABLED:
+				case ERR_MARKET_CLOSED:
+					nonRetryableError = true;
+					exitLoop = true;
 					break;
 
+				// Retryable error
 				case ERR_INVALID_PRICE:
-					if (cmd == OP_BUY)
-						OrderReliablePrint(fn, "INVALID PRICE ERROR - Requested Price: " + DoubleToStr(price, Digits) + "; Ask = " + DoubleToStr(MarketInfo(symbol, MODE_ASK), Digits));
-					else
-						OrderReliablePrint(fn, "INVALID PRICE ERROR - Requested Price: " + DoubleToStr(price, Digits) + "; Bid = " + DoubleToStr(MarketInfo(symbol, MODE_BID), Digits));
-					cnt++; // a retryable error
-					break;
-					
 				case ERR_INVALID_STOPS:
-					OrderReliablePrint(fn, "INVALID STOPS on attempted " + OrderTypeToString(cmd) + " : " + DoubleToStr(volume, 2) + " lots " + " @ " + DoubleToStr(price, Digits) + ", SL = " + DoubleToStr(stoploss, Digits) + ", TP = " + DoubleToStr(takeprofit, Digits));
-					cnt++; // a retryable error
-					break;
-					
+					skipSleep = true;			// we can apparently retry immediately according to MT docs (so no sleep)
 				case ERR_SERVER_BUSY:
 				case ERR_NO_CONNECTION:
 				case ERR_OFF_QUOTES:
 				case ERR_BROKER_BUSY:
 				case ERR_TRADE_CONTEXT_BUSY:
 				case ERR_TRADE_TIMEOUT:
-				case ERR_TRADE_DISABLED:
 				case ERR_PRICE_CHANGED:
 				case ERR_REQUOTE:
-				case ERR_MARKET_CLOSED:	// Added 16Jun20
-					cnt++; // a retryable error
+					cnt++;
 					break;
 
-				default:
-					// an apparently serious, unretryable error.
-					exit_loop = true;
+				default:	// an apparently serious, unretryable error.
+					OrderReliablePrint(fn, "Unknown error occured: " + err);
+					nonRetryableError = true;
+					exitLoop = true;
 					break;
 			}  
 
 			if (cnt > orRetryAttempts)
-				exit_loop = true;
+				exitLoop = true;
 
-			if (exit_loop)
+			if (exitLoop)
 			{
 				if (err != ERR_NO_ERROR  &&  err != ERR_NO_RESULT)
 					OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 				if (cnt > orRetryAttempts)
 					OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
+				break;
 			}
 			else
 			{
 				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
-				SleepRandomTime();
+				if (!skipSleep)
+					SleepRandomTime();
 				RefreshRates();
 			}
 		}
@@ -481,7 +518,8 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 		}
 		
 		// If not successful, log and return -1
-		OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + IntegerToString(orRetryAttempts) + " retries");
+		if (cnt > 0)
+			OrderReliablePrint(fn, "Failed to execute OP_BUY/OP_SELL, after " + IntegerToString(cnt-1) + " retries");
 		OrderReliablePrint(fn, "Failed trade: " + OrderTypeToString(cmd) + " " + DoubleToStr(volume, 2) + " lots  " + symbol +
 		                   "@" + DoubleToStr(price, digits) + " tp@" + DoubleToStr(takeprofit, digits) + " sl@" + DoubleToStr(stoploss, digits));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -581,12 +619,12 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 	int cnt;
 	int err = GetLastError(); // clear the global variable.
 	err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 
 	if ((cmd == OP_BUY) || (cmd == OP_SELL))
 	{
 		cnt = 0;
-		while (!exit_loop)
+		while (!exitLoop)
 		{
 			double pnow = price;
 			int slippagenow = slippage;
@@ -628,7 +666,7 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 			switch (err)
 			{
 				case ERR_NO_ERROR:
-					exit_loop = true;
+					exitLoop = true;
 					break;
 
 				case ERR_SERVER_BUSY:
@@ -650,15 +688,15 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 
 				default:
 					// an apparently serious, unretryable error.
-					exit_loop = true;
+					exitLoop = true;
 					break;
 
 			}  // end switch
 
 			if (cnt > orRetryAttempts)
-				exit_loop = true;
+				exitLoop = true;
 
-			if (!exit_loop)
+			if (!exitLoop)
 			{
 				OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + orRetryAttempts + ": Retryable error: " + OrderReliableErrTxt(err));
 				OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
@@ -811,7 +849,8 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	string fn = __FUNCTION__ + "[]";
 
 	bool result = false;
-	bool non_retryable_error = false;
+	bool nonRetryableError = false;
+	bool skipSleep = false;
 
 	// ========================================================================
 	// If testing or optimizing, there is no need to use this lib, as the 
@@ -874,84 +913,83 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	int cnt = 0;
 	int err = GetLastError(); // so we clear the global variable.
 	err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 
-	while (!exit_loop)
+	while (!exitLoop)
 	{
 		result = OrderModify(ticket, price, stoploss,
 		                     takeprofit, expiration, arrow_color);
 		err = GetLastError();
 
-		if (result == true)
-			exit_loop = true;
-		else
+		if (result)
+			break;	// exit while loop if modify successful
+
+		skipSleep = false;
+		
+		// Exclusively for debugging
+		if (err == ERR_NO_ERROR)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_NO_ERROR received, but OrderModify() still returned false; exiting");
+		else if (err == ERR_INVALID_STOPS)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_INVALID_STOPS, Broker\'s Min Stop Level (in pips) = " + DoubleToStr(MarketInfo(symbol, MODE_STOPLEVEL) * Point / AdjPoint(symbol), 1));
+		else if (err == ERR_TRADE_MODIFY_DENIED)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_TRADE_MODIFY_DENIED, cause unknown");
+			//EnsureValidStops(symbol, price, stoploss, takeprofit);
+
+		switch (err)
 		{
-			switch (err)
-			{
-				case ERR_NO_ERROR:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderClose() returned false; exiting");
-					break;
+			// No error or non-retryable
+			case ERR_MARKET_CLOSED:
+			case ERR_TRADE_DISABLED:
+				nonRetryableError = true;
+			case ERR_NO_ERROR:
+			case ERR_NO_RESULT:				// Attempted mod to existing value; see below for reported result		
+				exitLoop = true;
+				break;
 
-				case ERR_NO_RESULT:
-					// Modification to same value as before
-					// See below for reported result
-					exit_loop = true;
-					break;
+			// Retryable errors
+			case ERR_PRICE_CHANGED:
+			case ERR_REQUOTE:
+				skipSleep = true;			// we can apparently retry immediately according to MT docs (so no sleep)
+			case ERR_INVALID_STOPS:	
+			case ERR_COMMON_ERROR:
+			case ERR_SERVER_BUSY:
+			case ERR_NO_CONNECTION:
+			case ERR_TOO_FREQUENT_REQUESTS:
+			case ERR_TRADE_TIMEOUT:			// for modify this is a retryable error, I hope.
+			case ERR_INVALID_PRICE:
+			case ERR_OFF_QUOTES:
+			case ERR_BROKER_BUSY:
+			case ERR_TOO_MANY_REQUESTS:
+			case ERR_TRADE_CONTEXT_BUSY:
+			case ERR_TRADE_MODIFY_DENIED:	// This one may be important; have to Ensure Valid Stops AND valid price (for pends)
+				cnt++; 	// a retryable error
+				break;
 
-				// Shouldn't be any reason stops are invalid (and yet I've seen it); try again
-				case ERR_INVALID_STOPS:	
-					OrderReliablePrint(fn, "OrderModifyReliable, ERR_INVALID_STOPS, Broker\'s Min Stop Level (in pips) = " + DoubleToStr(MarketInfo(symbol, MODE_STOPLEVEL) * Point / AdjPoint(symbol), 1));
-//					EnsureValidStops(symbol, price, stoploss, takeprofit);
-				case ERR_COMMON_ERROR:
-				case ERR_SERVER_BUSY:
-				case ERR_NO_CONNECTION:
-				case ERR_TOO_FREQUENT_REQUESTS:
-				case ERR_TRADE_TIMEOUT:		// for modify this is a retryable error, I hope.
-				case ERR_INVALID_PRICE:
-				case ERR_OFF_QUOTES:
-				case ERR_BROKER_BUSY:
-				case ERR_TOO_MANY_REQUESTS:
-				case ERR_TRADE_CONTEXT_BUSY:
-				case ERR_TRADE_DISABLED:
-				case ERR_MARKET_CLOSED:	// Added 16Jun20
-					cnt++; 	// a retryable error
-					break;
-
-				case ERR_TRADE_MODIFY_DENIED:
-					// This one may be important; have to Ensure Valid Stops AND valid price (for pends)
-					break;
-				
-				case ERR_PRICE_CHANGED:
-				case ERR_REQUOTE:
-					RefreshRates();
-					continue; 	// we can apparently retry immediately according to MT docs.
-
-				default:
-					// an apparently serious, unretryable error.
-					exit_loop = true;
-					non_retryable_error = true;
-					break;
-
-			}  // end switch
+			default:				// an apparently serious, unretryable error.
+				OrderReliablePrint(fn, "Unknown error occured: " + err);
+				exitLoop = true;
+				nonRetryableError = true;
+				break;	
 		}
 
 		if (cnt > orRetryAttempts)
-			exit_loop = true;
-
-		if (!exit_loop)
 		{
-			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
-			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
-			SleepRandomTime();
-			RefreshRates();
+			OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
+			exitLoop = true;
+		}
+		if (exitLoop)
+		{
+			if (nonRetryableError)
+				OrderReliablePrint(fn, "Non-retryable error: "  + OrderReliableErrTxt(err));
+			break;
 		}
 		else
 		{
-			if (cnt > orRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
-			else if (non_retryable_error)
-				OrderReliablePrint(fn, "Non-retryable error: "  + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
+			if (!skipSleep)
+				SleepRandomTime();
+			RefreshRates();
 		}
 	}
 
@@ -973,7 +1011,8 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute modify after " + IntegerToString(orRetryAttempts) + " retries");
+		if (cnt > 0)
+			OrderReliablePrint(fn, "Failed to execute modify after " + IntegerToString(cnt-1) + " retries");
 		OrderReliablePrint(fn, "Failed modification: #"  + IntegerToString(ticket) + ", " + OrderTypeToString(type) + ", " + symbol +
 	                   	"@" + DoubleToStr(price, digits) + " sl@" + DoubleToStr(stoploss, digits) + " tp@" + DoubleToStr(takeprofit, digits));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -1010,7 +1049,8 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 	string fn = __FUNCTION__ + "[]";
 
 	bool result = false;
-	bool non_retryable_error = false;
+	bool nonRetryableError = false;
+	bool skipSleep = false;
 	
 	// ========================================================================
 	// If testing or optimizing, there is no need to use this lib, as the 
@@ -1057,15 +1097,16 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 	int cnt = 0;
 	int err = GetLastError(); // so we clear the global variable.
 	err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 	double priceNow = 0;
 	double hasSlippedBy = 0;
 
-	while (!exit_loop)
+	while (!exitLoop)
 	{
+		skipSleep = false;
+
 		// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 		// Get current price and calculate slippage
-		RefreshRates();
 		if (point != 0)
 		{
 			if (type == OP_BUY)
@@ -1096,69 +1137,73 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 		}
 		// = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : =
 
-		if (result == true)
-			exit_loop = true;
-		else
+		if (result)
+			break;	// exit while loop if close successful
+
+		// Exclusively for debugging
+		if (err == ERR_NO_ERROR)
+			OrderReliablePrint(fn, "OrderCloseReliable, ERR_NO_ERROR received, but OrderClose() still returned false; exiting");
+		else if (err == ERR_NO_RESULT)
+			OrderReliablePrint(fn, "OrderCloseReliable, ERR_NO_RESULT received, but OrderClose() returned false; exiting");
+		else if (err == ERR_INVALID_PRICE)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_INVALID_PRICE, Broker\'s Min Stop Level (in pips) = " + DoubleToStr(MarketInfo(symbol, MODE_STOPLEVEL) * Point / AdjPoint(symbol), 1));
+		else if (err == ERR_TRADE_MODIFY_DENIED)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_TRADE_MODIFY_DENIED, cause unknown");
+			//EnsureValidStops(symbol, price, stoploss, takeprofit);
+	
+		switch (err)
 		{
-			switch (err)
-			{
-				case ERR_NO_ERROR:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderClose() returned false; exiting");
-					OrderReliablePrint(fn, "If order did not actually close, error code is apparently wrong");
-					break;
-
-				case ERR_NO_RESULT:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_RESULT received, but OrderClose() returned false; exiting");
-					OrderReliablePrint(fn, "If order did not actually close, error code is apparently wrong");
-					break;
-
-				case ERR_INVALID_PRICE:
-					OrderReliablePrint(fn, "ERR_INVALID_PRICE received, but should not occur since we are refreshing rates");
-					cnt++; 	// a retryable error
-					break;
-
-				case ERR_PRICE_CHANGED:
-				case ERR_COMMON_ERROR:
-				case ERR_SERVER_BUSY:
-				case ERR_NO_CONNECTION:
-				case ERR_TOO_FREQUENT_REQUESTS:
-				case ERR_TRADE_TIMEOUT:		// for close this is a retryable error, I hope.
-				case ERR_TRADE_DISABLED:
-				case ERR_OFF_QUOTES:
-				case ERR_BROKER_BUSY:
-				case ERR_REQUOTE:
-				case ERR_TOO_MANY_REQUESTS:	
-				case ERR_TRADE_CONTEXT_BUSY:
-				case ERR_MARKET_CLOSED:	// Added 16Jun20
-					cnt++; 	// a retryable error
-					break;
-
-				default:
-					// Any other error is an apparently serious, unretryable error.
-					exit_loop = true;
-					non_retryable_error = true;
-					break;
-
-			}  // end switch
+			// No error or non-retryable
+			case ERR_MARKET_CLOSED:
+			case ERR_TRADE_DISABLED:
+				nonRetryableError = true;
+			case ERR_NO_ERROR:
+			case ERR_NO_RESULT:				// Attempted mod to existing value; see below for reported result		
+				exitLoop = true;
+				break;
+	
+			// Retryable error
+			case ERR_PRICE_CHANGED:
+			case ERR_REQUOTE:
+				skipSleep = true;			// we can apparently retry immediately according to MT docs (so no sleep)
+			case ERR_INVALID_PRICE:
+			case ERR_COMMON_ERROR:
+			case ERR_SERVER_BUSY:
+			case ERR_NO_CONNECTION:
+			case ERR_TOO_FREQUENT_REQUESTS:
+			case ERR_TRADE_TIMEOUT:			// for close this is a retryable error, I hope.
+			case ERR_OFF_QUOTES:
+			case ERR_BROKER_BUSY:
+			case ERR_TOO_MANY_REQUESTS:	
+			case ERR_TRADE_CONTEXT_BUSY:
+				cnt++;
+				break;
+	
+			default:						// Any other error is an apparently serious, unretryable error.
+				OrderReliablePrint(fn, "Unknown error occured: " + err);
+				exitLoop = true;
+				nonRetryableError = true;
+				break;
 		}
 
 		if (cnt > orRetryAttempts)
-			exit_loop = true;
-
-		if (exit_loop)
 		{
-			if (cnt > orRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
-			else if (non_retryable_error)
-				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
+			OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
+			exitLoop = true;
+		}
+		if (exitLoop)
+		{
+			if (nonRetryableError)
+				OrderReliablePrint(fn, "Non-retryable error: "  + OrderReliableErrTxt(err));
+			break;
 		}
 		else
 		{
 			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
-			SleepRandomTime();
+			if (!skipSleep)
+				SleepRandomTime();
+			RefreshRates();
 		}
 	}
 
@@ -1180,8 +1225,9 @@ bool OrderCloseReliable(int ticket, double volume, double price,
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(cnt-1) + " retries");
-		OrderReliablePrint(fn, "Failed close: Ticket #" + IntegerToString(ticket) + " @ Price: " + DoubleToStr(priceNow, digits) + 
+		if (cnt > 0)
+			OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(cnt-1) + " retries");
+		OrderReliablePrint(fn, "Failed close on " + symbol + ": Ticket #" + IntegerToString(ticket) + " @ Price: " + DoubleToStr(priceNow, digits) + 
 	                   	   " (Requested Price: " + DoubleToStr(price, digits) + "), Slippage: " + IntegerToString(slippage));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
 	}
@@ -1219,7 +1265,8 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 	string fn = __FUNCTION__ + "[]";
 
 	bool result = false;
-	bool non_retryable_error = false;
+	bool nonRetryableError = false;
+	bool skipSleep = false;
 	
 	// ========================================================================
 	// If testing or optimizing, there is no need to use this lib, as the 
@@ -1264,12 +1311,14 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 	int cnt = 0;
 	int err = GetLastError(); // so we clear the global variable.
 	err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 	double pnow = 0;
 	int slippagenow = slippage;
 
-	while (!exit_loop)
+	while (!exitLoop)
 	{
+		skipSleep = false;
+		
 		if (point != 0)
 		{
 			if (type == OP_BUY)
@@ -1295,64 +1344,73 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 		result = OrderClose(ticket, volume, pnow, slippagenow, arrow_color);
 		err = GetLastError();
 
-		if (result == true)
-			exit_loop = true;
-		else
+		if (result)
+			break;	// exit while loop if close successful
+
+		// Exclusively for debugging
+		if (err == ERR_NO_ERROR)
+			OrderReliablePrint(fn, "OrderCloseReliable, ERR_NO_ERROR received, but OrderClose() still returned false; exiting");
+		else if (err == ERR_NO_RESULT)
+			OrderReliablePrint(fn, "OrderCloseReliable, ERR_NO_RESULT received, but OrderClose() returned false; exiting");
+		else if (err == ERR_INVALID_PRICE)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_INVALID_PRICE, Broker\'s Min Stop Level (in pips) = " + DoubleToStr(MarketInfo(symbol, MODE_STOPLEVEL) * Point / AdjPoint(symbol), 1));
+		else if (err == ERR_TRADE_MODIFY_DENIED)
+			OrderReliablePrint(fn, "OrderModifyReliable, ERR_TRADE_MODIFY_DENIED, cause unknown");
+			//EnsureValidStops(symbol, price, stoploss, takeprofit);
+	
+		switch (err)
 		{
-			switch (err)
-			{
-				case ERR_NO_ERROR:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderClose() returned false; exiting");
-					break;
-
-				case ERR_NO_RESULT:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_RESULT received, but OrderClose() returned false; exiting");
-					break;
-
-				case ERR_COMMON_ERROR:
-				case ERR_SERVER_BUSY:
-				case ERR_NO_CONNECTION:
-				case ERR_TOO_FREQUENT_REQUESTS:
-				case ERR_TRADE_TIMEOUT:		// for close this is a retryable error, I hope.
-				case ERR_TRADE_DISABLED:
-				case ERR_PRICE_CHANGED:
-				case ERR_INVALID_PRICE:
-				case ERR_OFF_QUOTES:
-				case ERR_BROKER_BUSY:
-				case ERR_REQUOTE:
-				case ERR_TOO_MANY_REQUESTS:	
-				case ERR_TRADE_CONTEXT_BUSY:
-				case ERR_MARKET_CLOSED:	// Added 16Jun20
-					cnt++; 	// a retryable error
-					break;
-
-				default:
-					// Any other error is an apparently serious, unretryable error.
-					exit_loop = true;
-					non_retryable_error = true;
-					break;
-
-			}  // end switch
+			// No error or non-retryable
+			case ERR_MARKET_CLOSED:
+			case ERR_TRADE_DISABLED:
+				nonRetryableError = true;
+			case ERR_NO_ERROR:
+			case ERR_NO_RESULT:				// Attempted mod to existing value; see below for reported result		
+				exitLoop = true;
+				break;
+	
+			// Retryable error
+			case ERR_PRICE_CHANGED:
+			case ERR_REQUOTE:
+				skipSleep = true;			// we can apparently retry immediately according to MT docs (so no sleep)
+			case ERR_INVALID_PRICE:
+			case ERR_COMMON_ERROR:
+			case ERR_SERVER_BUSY:
+			case ERR_NO_CONNECTION:
+			case ERR_TOO_FREQUENT_REQUESTS:
+			case ERR_TRADE_TIMEOUT:			// for close this is a retryable error, I hope.
+			case ERR_OFF_QUOTES:
+			case ERR_BROKER_BUSY:
+			case ERR_TOO_MANY_REQUESTS:	
+			case ERR_TRADE_CONTEXT_BUSY:
+				cnt++;
+				break;
+	
+			default:						// Any other error is an apparently serious, unretryable error.
+				OrderReliablePrint(fn, "Unknown error occured: " + err);
+				exitLoop = true;
+				nonRetryableError = true;
+				break;
 		}
 
 		if (cnt > orRetryAttempts)
-			exit_loop = true;
-
-		if (!exit_loop)
+		{
+			OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
+			exitLoop = true;
+		}
+		if (exitLoop)
+		{
+			if (nonRetryableError)
+				OrderReliablePrint(fn, "Non-retryable error: "  + OrderReliableErrTxt(err));
+			break;
+		}
+		else
 		{
 			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
-			SleepRandomTime();
-		}
-
-		if (exit_loop)
-		{
-			if (cnt > orRetryAttempts)
-				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
-			else if (non_retryable_error)
-				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
+			if (!skipSleep)
+				SleepRandomTime();
+			RefreshRates();
 		}
 	}
 
@@ -1374,8 +1432,9 @@ bool OrderCloseReliableMKT(int ticket, double volume, double price,
 	}
 	else
 	{
-		OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(orRetryAttempts) + " retries");
-		OrderReliablePrint(fn, "Failed close: Ticket #" + IntegerToString(ticket) + " @ Price: " +
+		if (cnt > 0)
+			OrderReliablePrint(fn, "Failed to execute close after " + IntegerToString(orRetryAttempts) + " retries");
+		OrderReliablePrint(fn, "Failed close on " + symbol + ": Ticket #" + IntegerToString(ticket) + " @ Price: " +
 	                   		DoubleToStr(pnow, digits) + " (Initial Price: " + DoubleToStr(price, digits) + "), Slippage: " + 
 	                   		IntegerToString(slippagenow) + " (Initial Slippage: " + IntegerToString(slippage) + ")");
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
@@ -1412,7 +1471,7 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 	string fn = __FUNCTION__ + "[]";
 
 	bool result = false;
-	bool non_retryable_error = false;
+	bool nonRetryableError = false;
 
 	// ========================================================================
 	// If testing or optimizing, there is no need to use this lib, as the 
@@ -1457,26 +1516,26 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 	int cnt = 0;
 	int err = GetLastError(); // so we clear the global variable.
 	err = 0;
-	bool exit_loop = false;
+	bool exitLoop = false;
 
-	while (!exit_loop)
+	while (!exitLoop)
 	{
 		result = OrderDelete(ticket, clr);
 		err = GetLastError();
 
 		if (result == true)
-			exit_loop = true;
+			exitLoop = true;
 		else
 		{
 			switch (err)
 			{
 				case ERR_NO_ERROR:
-					exit_loop = true;
-					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderDelete() returned false; exiting");
+					exitLoop = true;
+					OrderReliablePrint(fn, "ERR_NO_ERROR received, but OrderDelete() still returned false; exiting");
 					break;
 
 				case ERR_NO_RESULT:
-					exit_loop = true;
+					exitLoop = true;
 					OrderReliablePrint(fn, "ERR_NO_RESULT received, but OrderDelete() returned false; exiting");
 					break;
 
@@ -1497,17 +1556,17 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 					break;
 
 				default:	// Any other error is an apparently serious, unretryable error.
-					exit_loop = true;
-					non_retryable_error = true;
+					exitLoop = true;
+					nonRetryableError = true;
 					break;
 
 			}  // end switch
 		}
 
 		if (cnt > orRetryAttempts)
-			exit_loop = true;
+			exitLoop = true;
 
-		if (!exit_loop)
+		if (!exitLoop)
 		{
 			OrderReliablePrint(fn, "Result of attempt " + IntegerToString(cnt) + " of " + IntegerToString(orRetryAttempts) + ": Retryable error: " + OrderReliableErrTxt(err));
 			OrderReliablePrint(fn, "~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~  ~");
@@ -1517,7 +1576,7 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 		{
 			if (cnt > orRetryAttempts)
 				OrderReliablePrint(fn, "Retry attempts maxed at " + IntegerToString(orRetryAttempts));
-			else if (non_retryable_error)
+			else if (nonRetryableError)
 				OrderReliablePrint(fn, "Non-retryable error: " + OrderReliableErrTxt(err));
 		}
 	}
