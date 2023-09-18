@@ -127,6 +127,15 @@
 //	different, but hopefully some improvements -changed trade disabled and 
 //	market closed to be non-retryable errors.
 //
+//  v43, 17Dec21:
+//	Added OrderReliableSetDebugComment() and assoc mods.
+//
+//  v44, 10Aug23:
+//	Added PrintOrder() function, because I was tired of the confusing 
+//	OrderPrint() one without lables.  This func lables values and also, 
+//  when used in OrderModifyReliable, will indicate which value(s) changed.
+//  See function and uses for more info.
+//
 //===========================================================================
 
 #property copyright "Copyright © 2006, Derk Wehler"
@@ -135,12 +144,13 @@
 #include <stdlib.mqh>
 #include <stderror.mqh>
 
-string 	OrderReliableVersion = "v42";
+string 	OrderReliableVersion = "v44";
 
 int 	orRetryAttempts			= 5;
-double 	orSleepAveTime			= 50.0;
+double 	orSleepAveTime			= 150.0;
 
 int 	orErrorLevel 			= 3;
+string	orTradeComment			= "";
 
 bool	orUseLimitToMarket		= false;
 bool	orUseForTesting 		= false;
@@ -350,7 +360,8 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 			OrderReliablePrint(fn, "Ticket #" + IntegerToString(ticket) + ": Successful " + OrderTypeToString(cmd) + " order placed with comment = " + comment + ", details follow.");
 			if (!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
 				OrderReliablePrint(fn, "Could Not Select Ticket #" + IntegerToString(ticket));
-			OrderPrint();
+			else
+				PrintOrder(fn);
 			OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
 			OrderReliablePrint(fn, "");
 			return(ticket); // SUCCESS!
@@ -511,7 +522,8 @@ int OrderSendReliable(string symbol, int cmd, double volume, double price,
 			OrderReliablePrint(fn, "Ticket #" + IntegerToString(ticket) + ": Successful " + OrderTypeToString(cmd) + " order placed with comment = " + comment + ", details follow.");
 			if (!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
 				OrderReliablePrint(fn, "Could Not Select Ticket #" + IntegerToString(ticket));
-			OrderPrint();
+			else
+				PrintOrder(fn);
 			OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
 			OrderReliablePrint(fn, "");
 			return(ticket); // SUCCESS!
@@ -720,7 +732,8 @@ int OrderSendReliableMKT(string symbol, int cmd, double volume, double price,
 		{
 			OrderReliablePrint(fn, "Ticket #" + IntegerToString(ticket) + ": Successful " + OrderTypeToString(cmd) + " order placed, details follow.");
 			OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES);
-			OrderPrint();
+			else
+				PrintOrder(fn);
 			OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
 			OrderReliablePrint(fn, "");
 			return(ticket); // SUCCESS!
@@ -880,7 +893,7 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 		
 	OrderReliablePrint(fn, "");
-	OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
+	OrderReliablePrint(fn, "•    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •");
 	OrderReliablePrint(fn, "Attempted modify of #" + IntegerToString(ticket) + ", " + OrderTypeToString(type) + ", price:" + DoubleToStr(price, digits) +
 	                   ", sl:" + DoubleToStr(stoploss, digits) + ", tp:" + DoubleToStr(takeprofit, digits) + 
 	                   ", exp:" + TimeToStr(expiration));
@@ -914,6 +927,9 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	int err = GetLastError(); // so we clear the global variable.
 	err = 0;
 	bool exitLoop = false;
+
+	// Before modifying, store old attributes so we can know what changes
+	PrintOrder(fn, ticket);
 
 	while (!exitLoop)
 	{
@@ -1007,7 +1023,8 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 		OrderReliablePrint(fn, "Ticket #" + IntegerToString(ticket) + ": Modification successful, updated trade details follow.");
 		if (!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
 			OrderReliablePrint(fn, "Could Not Select Ticket #" + IntegerToString(ticket));
-		OrderPrint();
+		else
+			PrintOrder(fn);
 	}
 	else
 	{
@@ -1017,7 +1034,7 @@ bool OrderModifyReliable(int ticket, double price, double stoploss,
 	                   	"@" + DoubleToStr(price, digits) + " sl@" + DoubleToStr(stoploss, digits) + " tp@" + DoubleToStr(takeprofit, digits));
 		OrderReliablePrint(fn, "Last error: " + OrderReliableErrTxt(err));
 	}
-	OrderReliablePrint(fn, "•  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •  •");
+	OrderReliablePrint(fn, "•    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •    •");
 	OrderReliablePrint(fn, "");
 	return(result);
 }
@@ -1607,6 +1624,118 @@ bool OrderDeleteReliable(int ticket, color clr=CLR_NONE)
 //=============================================================================
 //=============================================================================
 
+
+//=============================================================================
+//                                PrintOrder()
+//  Derk Wehler, 10Aug2023:
+//  Tired of the OrderPrint function, so made this one which shows more.
+//  NOTE: This assumes the order has been selected!
+//
+//  Also added ticket param.  By default (-1) it will just print the order's 
+//  attributes, but it ticket it passed in, then it saves the 4 things that 
+//  can possibly change.  This is only used in OrderModifyReliable, and called 
+//  prior to the mod.  Then called again, where it can highlight what has been 
+//  changed by using ALL CAPS.
+//  The only things that can change are StopLoss, TakeProfit, and for pending 
+//  orders, Open Price & Expiration.
+//  
+//=============================================================================
+void PrintOrder(string fn="", int ticket=-1)
+{
+	if (fn == "")
+		fn = __FUNCTION__ + "[]";
+	
+	static double price = -1;
+	static double sl = -1;
+	static double tp = -1;
+	static datetime expir = 0;
+	static bool set = false;
+	
+	if (ticket != -1)
+	{
+		if (OrderSelect(ticket, SELECT_BY_TICKET))
+		{
+			set = true;
+			price = OrderOpenPrice();
+			sl = OrderStopLoss();
+			tp = OrderTakeProfit();
+			if (OrderType() > OP_SELL  &&  OrderExpiration() > 0)
+				expir = OrderExpiration();
+		}
+		return;
+	}
+
+	int type = OrderType();
+	OrderReliablePrint(fn, " ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨");
+	string out = "  > >  Ticket: " + OrderTicket();
+	out = out + ";  Open Time: " + TimeToStr(OrderOpenTime(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+	out = out + ";  Type: " + OrderTypeToString(type);
+	out = out + ";  Lots: " + OrderLots();
+	out = out + ";  Symbol: " + OrderSymbol();
+	OrderReliablePrint(fn, out);
+	
+
+	string strSL = (OrderStopLoss() == 0) ? "None" : OrderStopLoss();
+	string strTP = (OrderTakeProfit() == 0) ? "None" : OrderTakeProfit();
+	string strOldSL = (sl == 0) ? "None" : sl;
+	string strOldTP = (tp == 0) ? "None" : tp;
+	
+	if (set  &&  price != OrderOpenPrice())
+		out = "  > >  OPEN PRICE: " + price + " --> " + OrderOpenPrice();
+	else
+		out = "  > >  Open Price: " + OrderOpenPrice();
+		
+	if (set  &&  sl != OrderStopLoss())
+		out = out + ";  STOPLOSS: " + strOldSL + " --> " + strSL;
+	else
+		out = out + ";  StopLoss: " + strSL;
+		
+	if (set  &&  tp != OrderTakeProfit())
+		out = out + ";  TAKEPROFIT: " + strOldTP + " --> " + strTP;
+	else
+		out = out + ";  TakeProfit: " + strTP;
+	OrderReliablePrint(fn, out);
+
+	
+	if (type == OP_BUY  ||  type == OP_SELL)
+	{
+		out = "  > >  Profit: $" + DoubleToStr(OrderProfit(), 2);
+		out = out + ";  Comm: $" + DoubleToStr(OrderCommission(), 2);
+		out = out + ";  Swap: $" + DoubleToStr(OrderSwap(), 2);
+		OrderReliablePrint(fn, out);
+	}
+
+	
+	out = "  > >  Comment: \"" + OrderComment() + "\"";
+	out = out + ";  Magic: " + OrderMagicNumber();
+	if (type > OP_SELL)
+	{
+		if (set  &&  OrderExpiration() != expir)
+		{
+			out = out + ";  EXP: " + TimeToStr(expir, TIME_DATE|TIME_MINUTES|TIME_SECONDS) + " --> ";
+			if (OrderExpiration() != 0)
+				out = out + TimeToStr(OrderExpiration(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+			else
+				out = out + "None";
+		}
+		else if (OrderExpiration() != 0)
+			out = out + ";  Exp: " + TimeToStr(OrderExpiration(), TIME_DATE|TIME_MINUTES|TIME_SECONDS);
+	}
+	OrderReliablePrint(fn, out);
+	OrderReliablePrint(fn, " ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨ ¨");
+
+	// Reset stored vars
+	if (ticket == -1)
+	{
+		price = -1;
+		sl = -1;
+		tp = -1;
+		expir = 0;
+		set = false;
+	}
+}
+
+
 string OrderReliableErrTxt(int err)
 {
 	return (IntegerToString(err) + "  ::  " + ErrorDescription(err));
@@ -1622,13 +1751,21 @@ void OrderReliableSetErrorLevel(int level)
 }
 
 
+void OrderReliableSetDebugComment(string comment)
+{
+	orTradeComment = comment;
+}
+
 void OrderReliablePrint(string f, string s)
 {
+	string tc = orTradeComment;
+	if (tc != "")	tc = " <" + tc + "> ";
+	
 	// Print to log prepended with stuff;
 	if (orErrorLevel >= 99 || (!(IsTesting() || IsOptimization())))
 	{
 		if (orErrorLevel > 0)
-			Print(f + " " + OrderReliableVersion + ":     " + s);
+			Print(tc + f + " " + OrderReliableVersion + ":     " + s);
 	}
 }
 
